@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Google Flow 批量分镜投喂器</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="title-row">
+      <div class="brand-badge">
+        <span class="dot"></span>
+        <h1>Flow 批量分镜投喂器 v1.5</h1>
+      </div>
+      <button type="button" id="open-import-btn" class="btn btn-primary btn-sm">
+        ➕ 导入新期数
+      </button>
+    </div>
+
+    <div class="project-bar">
+      <label for="project-select" class="sr-only">选择当前视频项目</label>
+      <select id="project-select" class="project-select" title="切换已保存的视频分镜项目"></select>
+      <button type="button" id="delete-project-btn" class="btn btn-ghost btn-icon" title="删除当前项目" aria-label="删除当前项目">🗑️</button>
+    </div>
+
+    <div class="mode-tabs" role="tablist" aria-label="提示词模式切换">
+      <button type="button" id="tab-image" class="mode-tab active" role="tab" aria-selected="true" data-mode="image">
+        🎨 批量生图 (<span id="img-progress-text">0/0</span>)
+      </button>
+      <button type="button" id="tab-video" class="mode-tab" role="tab" aria-selected="false" data-mode="video">
+        🎬 批量生视频 (<span id="vid-progress-text">0/0</span>)
+      </button>
+    </div>
+
+    <div class="progress-wrap">
+      <progress id="batch-progress" max="100" value="0">0%</progress>
+    </div>
+  </header>
+
+  <section class="queue-panel" aria-label="自动挂机排队控制台">
+    <!-- Execution Mode Switcher: 全自动模式 vs 半自动模式 -->
+    <div class="exec-mode-switch" role="radiogroup" aria-label="执行方式切换">
+      <button type="button" id="exec-full-auto-btn" class="exec-mode-btn active" data-exec="auto">
+        🤖 全自动模式
+        <small>加参考图 + 填词 + 自动点 → 生成</small>
+      </button>
+      <button type="button" id="exec-semi-auto-btn" class="exec-mode-btn" data-exec="semi">
+        🖐️ 半自动模式
+        <small>加参考图 + 填词（最后交给你点 →）</small>
+      </button>
+    </div>
+
+    <!-- Native + Button Asset Picker Automation (点左下角 ➕ ➔ 上传的内容 ➔ 添加到提示) -->
+    <div class="flow-sync-bar">
+      <label for="auto-plus-ref-check" class="setting-item checkbox-label">
+        <input type="checkbox" id="auto-plus-ref-check" class="visually-hidden" checked>
+        <span id="plus-ref-title" class="ref-label-strong">【生图参考图】自动点左下角 ➕ ➔ 上传的内容 ➔ 添加到提示</span>
+      </label>
+      <div class="flow-params-grid three-cols">
+        <label class="param-chip">
+          <span>➕ 左侧分类</span>
+          <select id="plus-tab-select" class="mini-select">
+            <option value="上传的内容" selected>📁 上传的内容</option>
+            <option value="图片">🖼️ 图片</option>
+            <option value="全部">🎛️ 全部</option>
+          </select>
+        </label>
+        <label class="param-chip">
+          <span>选择第几个</span>
+          <input type="number" id="plus-item-index" min="1" max="99" value="1" class="mini-input" title="默认选列表中的第 1 张图">
+        </label>
+        <label class="param-chip">
+          <span>或按名称匹配(可选)</span>
+          <input type="text" id="plus-item-keyword" placeholder="如 Create_style" class="mini-input" title="留空则直接按序号选择">
+        </label>
+      </div>
+    </div>
+
+    <!-- Separate Mode Parameter Lock Panels -->
+    <!-- Panel A: Image Mode Lock Settings (图2) -->
+    <div id="img-sync-panel" class="flow-sync-bar">
+      <label for="auto-sync-img-check" class="setting-item checkbox-label">
+        <input type="checkbox" id="auto-sync-img-check" class="visually-hidden" checked>
+        <span>【生图锁定】自动确保 Flow 为「图片」模式与指定比例</span>
+      </label>
+      <div class="flow-params-grid two-cols">
+        <label class="param-chip">
+          <span>生图比例</span>
+          <select id="param-img-aspect" class="mini-select">
+            <option value="16:9" selected>16:9</option>
+            <option value="4:3">4:3</option>
+            <option value="1:1">1:1</option>
+            <option value="3:4">3:4</option>
+            <option value="9:16">9:16</option>
+          </select>
+        </label>
+        <label class="param-chip">
+          <span>生图张数</span>
+          <select id="param-img-count" class="mini-select">
+            <option value="x1" selected>x1</option>
+            <option value="x2">x2</option>
+            <option value="x3">x3</option>
+            <option value="x4">x4</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <!-- Panel B: Video Mode Lock Settings (图3) -->
+    <div id="vid-sync-panel" class="flow-sync-bar" hidden>
+      <label for="auto-sync-vid-check" class="setting-item checkbox-label">
+        <input type="checkbox" id="auto-sync-vid-check" class="visually-hidden" checked>
+        <span>【视频锁定】自动确保 Flow 为「视频」模式与对应秒数</span>
+      </label>
+      <div class="flow-params-grid">
+        <label class="param-chip">
+          <span>视频类型</span>
+          <select id="param-vid-submode" class="mini-select">
+            <option value="素材" selected>🧩 素材</option>
+            <option value="帧">⛶ 帧</option>
+          </select>
+        </label>
+        <label class="param-chip">
+          <span>视频比例</span>
+          <select id="param-vid-aspect" class="mini-select">
+            <option value="16:9" selected>16:9</option>
+            <option value="9:16">9:16</option>
+          </select>
+        </label>
+        <label class="param-chip">
+          <span>视频画质</span>
+          <select id="param-vid-res" class="mini-select">
+            <option value="720p" selected>720p</option>
+            <option value="360p">360p</option>
+          </select>
+        </label>
+        <label class="param-chip">
+          <span>视频条数</span>
+          <select id="param-vid-count" class="mini-select">
+            <option value="x1" selected>x1</option>
+            <option value="x2">x2</option>
+            <option value="x3">x3</option>
+            <option value="x4">x4</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="queue-row">
+      <button type="button" id="toggle-queue-btn" class="btn btn-accent">
+        ▶️ 启动全自动排队投喂
+      </button>
+      <button type="button" id="feed-next-btn" class="btn btn-secondary" title="立即执行下一个未完成分镜">
+        ⚡ 投喂下一镜
+      </button>
+    </div>
+
+    <div class="queue-settings">
+      <label for="interval-input" class="setting-item">
+        <span>排队间隔(秒):</span>
+        <input type="number" id="interval-input" min="5" max="600" value="25" class="num-input">
+      </label>
+
+      <button type="button" id="reset-progress-btn" class="btn-link" title="重置当前模式所有分镜为未完成">
+        🔄 重置当前进度
+      </button>
+    </div>
+
+    <div id="status-banner" class="status-banner" role="status" aria-live="polite">
+      就绪：已支持「🤖 全自动模式（自动点白色 → 按钮）」与「🖐️ 半自动模式（交给你手点 →）」。
+    </div>
+  </section>
+
+  <main id="shots-container" class="shots-container" aria-label="分镜卡片列表"></main>
+
+  <!-- Native modal dialog for importing new episodes / scripts -->
+  <dialog id="import-dialog" closedby="any" aria-labelledby="import-dialog-title">
+    <form method="dialog" id="import-form" class="dialog-content">
+      <div class="dialog-header">
+        <h2 id="import-dialog-title">📂 导入新期数分镜脚本</h2>
+        <button type="submit" value="cancel" class="btn btn-ghost btn-icon" aria-label="关闭对话框" autofocus>✕</button>
+      </div>
+
+      <div class="dialog-body">
+        <label for="new-project-name" class="field-label">新项目 / 期数名称：</label>
+        <input type="text" id="new-project-name" placeholder="例如：第1期：Champion草莽王朝（38镜）" class="text-input">
+
+        <div class="import-box">
+          <div class="import-box-title">方式 A：一键上传分镜文件（推荐）</div>
+          <p class="hint-text">
+            支持直接选择 <code>.md</code> 完整分镜文档（自动同时提取生图+视频双轨提示词、时间码、秒数与文案），或选择单个/两个 <code>.txt</code> 批量提示词文件：
+          </p>
+          <input type="file" id="file-upload-input" accept=".md,.txt" multiple class="file-input">
+        </div>
+
+        <div class="import-box">
+          <div class="import-box-title">方式 B：直接粘贴提示词文本（空行分隔每镜）</div>
+          <label for="paste-image-prompts" class="field-label">生图提示词列表（或完整 Markdown 全文）：</label>
+          <textarea id="paste-image-prompts" rows="4" placeholder="粘贴完整 Markdown 分镜文档，或按空行分隔的生图提示词..." class="textarea-input"></textarea>
+
+          <label for="paste-video-prompts" class="field-label">视频生成提示词列表（若上方已粘 Markdown 可留空）：</label>
+          <textarea id="paste-video-prompts" rows="4" placeholder="粘贴按空行分隔的视频生成提示词..." class="textarea-input"></textarea>
+        </div>
+      </div>
+
+      <div class="dialog-footer">
+        <button type="submit" value="cancel" class="btn btn-secondary">取消</button>
+        <button type="button" id="confirm-import-btn" class="btn btn-primary">✅ 解析并保存新项目</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="default-ep0.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>
