@@ -1310,6 +1310,24 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             return collected;
           };
 
+          const executeFullClick = (target) => {
+            if (!target) return;
+            // 1. Pointer + Mouse Sequence with exact coordinates
+            triggerPointerSequence(target);
+            // 2. Also trigger on closest button container
+            const btn = target.closest?.('button, [role="button"]');
+            if (btn && btn !== target) {
+              triggerPointerSequence(btn);
+            }
+            // 3. Native .click()
+            try {
+              if (typeof target.click === 'function') target.click();
+            } catch (_) {}
+            try {
+              if (btn && typeof btn.click === 'function') btn.click();
+            } catch (_) {}
+          };
+
           const findBottomRightSendTargets = () => {
             inputEl = findPromptInput() || inputEl;
             composerBox = findComposerBox(inputEl);
@@ -1318,17 +1336,51 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             const pillBtn = findModePillBtn();
             const pillRect = pillBtn ? pillBtn.getBoundingClientRect() : null;
 
-            const rowTopMin = pillRect ? pillRect.top - 16 : inRect.bottom - 20;
-            const rowBottomMax = pillRect ? pillRect.bottom + 16 : inRect.bottom + 90;
-            const minLeft = pillRect ? pillRect.right - 6 : boxRect.right - 72;
-
             const targets = [];
+
+            // Strategy A: Visual Match - The White Circular Arrow Button (#FFFFFF round button)
+            const allInBox = queryAllDeep(composerBox).filter(isVisible);
+            for (const el of allInBox) {
+              if (el === composerBox || el === inputEl || el === pillBtn) continue;
+              const r = el.getBoundingClientRect();
+              if (r.width < 18 || r.width > 72 || r.height < 18 || r.height > 72) continue;
+              // Must be in bottom-right area of composer box
+              if (r.right < boxRect.right - 120 || r.bottom < boxRect.bottom - 80) continue;
+
+              const style = window.getComputedStyle(el);
+              const bg = style.backgroundColor || '';
+              const isWhite =
+                bg.includes('255, 255, 255') ||
+                bg === 'rgb(255, 255, 255)' ||
+                bg === '#ffffff' ||
+                bg === 'white';
+              const isCircular =
+                parseFloat(style.borderRadius || '0') >= 14 ||
+                style.borderRadius.includes('50%') ||
+                style.borderRadius.includes('9999');
+
+              // Arrow icon or SVG inside
+              const hasSvg = el.querySelector('svg, path, polygon') !== null || el.tagName === 'SVG' || el.tagName === 'PATH';
+              const txt = (el.innerText || el.textContent || '').trim();
+              const hasArrowText = txt === '→' || txt === '➔' || txt === 'arrow_forward' || txt === 'send';
+
+              if (isWhite || (isCircular && (hasSvg || hasArrowText))) {
+                const btnWrap = el.closest?.('button, [role="button"]') || el;
+                if (!targets.includes(btnWrap)) targets.push(btnWrap);
+                if (!targets.includes(el)) targets.push(el);
+              }
+            }
+
+            // Strategy B: Candidates from composer toolbar
+            const rowTopMin = pillRect ? pillRect.top - 20 : inRect.bottom - 30;
+            const rowBottomMax = pillRect ? pillRect.bottom + 20 : inRect.bottom + 120;
+            const minLeft = pillRect ? pillRect.right - 8 : boxRect.right - 90;
 
             const bottomRightCandidates = getComposerButtons().filter((el) => {
               if (!isVisible(el)) return false;
               if (el === pillBtn) return false;
               const r = el.getBoundingClientRect();
-              if (r.width < 14 || r.width > 64 || r.height < 14 || r.height > 64) return false;
+              if (r.width < 14 || r.width > 72 || r.height < 14 || r.height > 72) return false;
               if (r.top < rowTopMin || r.bottom > rowBottomMax) return false;
               if (r.left < minLeft) return false;
               return true;
@@ -1342,21 +1394,24 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
               if (!targets.includes(c)) targets.push(c);
             }
 
-            const probePoints = [];
+            // Strategy C: Physical coordinate probes in bottom-right corner
+            const probePoints = [
+              [boxRect.right - 28, boxRect.bottom - 28],
+              [boxRect.right - 36, boxRect.bottom - 32],
+              [boxRect.right - 20, boxRect.bottom - 24]
+            ];
             if (pillRect) {
               const cy = pillRect.top + pillRect.height / 2;
-              probePoints.push([pillRect.right + 22, cy]);
-              probePoints.push([pillRect.right + 28, cy]);
-              probePoints.push([pillRect.right + 16, cy]);
+              probePoints.push([pillRect.right + 25, cy]);
+              probePoints.push([pillRect.right + 35, cy]);
             }
-            probePoints.push([boxRect.right - 26, boxRect.bottom - 26]);
 
             for (const [px, py] of probePoints) {
               const hitEls = deepElementsFromPoint(px, py);
               for (const h of hitEls) {
                 if (h === composerBox || h === pillBtn || h === inputEl) continue;
                 const r = h.getBoundingClientRect?.();
-                if (!r || r.width > 72 || r.height > 72 || r.top < rowTopMin) continue;
+                if (!r || r.width > 75 || r.height > 75 || r.top < rowTopMin) continue;
                 const btnWrap = h.closest?.('button, [role="button"]') || h;
                 if (btnWrap && btnWrap !== composerBox && btnWrap !== pillBtn && !targets.includes(btnWrap)) {
                   targets.push(btnWrap);
@@ -1376,7 +1431,7 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             if (el.getAttribute?.('aria-disabled') === 'true') return false;
             if (el.hasAttribute?.('disabled')) return false;
             const st = window.getComputedStyle(el);
-            if (st.pointerEvents === 'none' || parseFloat(st.opacity || '1') < 0.45) return false;
+            if (st.pointerEvents === 'none' || parseFloat(st.opacity || '1') < 0.35) return false;
             return true;
           };
 
@@ -1384,34 +1439,40 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
           for (let w = 0; w < 30; w++) {
             sendTargets = findBottomRightSendTargets().filter(isTargetEnabled);
             if (sendTargets.length > 0) break;
-            await sleep(200);
+            await sleep(150);
           }
 
           for (let attempt = 0; attempt < 3; attempt++) {
             sendTargets = findBottomRightSendTargets().filter(isTargetEnabled);
 
             if (sendTargets.length > 0) {
-              triggerOptionClick(sendTargets[0]);
+              // Click the primary detected send button
+              executeFullClick(sendTargets[0]);
               if (sendTargets[1] && sendTargets[1] !== sendTargets[0]) {
-                await sleep(60);
-                triggerOptionClick(sendTargets[1]);
+                await sleep(50);
+                executeFullClick(sendTargets[1]);
               }
-            } else {
-              inputEl.focus();
-              inputEl.dispatchEvent(
-                new KeyboardEvent('keydown', {
-                  key: 'Enter',
-                  code: 'Enter',
-                  keyCode: 13,
-                  which: 13,
-                  bubbles: true,
-                  composed: true,
-                  cancelable: true
-                })
-              );
             }
 
-            await sleep(850);
+            // Also dispatch Enter / Cmd+Enter / Ctrl+Enter as solid backup
+            if (inputEl) {
+              inputEl.focus();
+              const keyOpts = {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                composed: true,
+                cancelable: true
+              };
+              // Plain Enter
+              inputEl.dispatchEvent(new KeyboardEvent('keydown', keyOpts));
+              // Cmd+Enter (Mac) & Ctrl+Enter (Win)
+              inputEl.dispatchEvent(new KeyboardEvent('keydown', { ...keyOpts, metaKey: true, ctrlKey: true }));
+            }
+
+            await sleep(800);
 
             const currentInput = findPromptInput();
             const remainingText = currentInput
@@ -1420,7 +1481,7 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             if (!remainingText || remainingText === '您希望创作什么？' || remainingText.length < 10) {
               break;
             }
-            await sleep(750);
+            await sleep(600);
           }
         }
 
