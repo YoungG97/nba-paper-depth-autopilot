@@ -1176,119 +1176,158 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
         await sleep(320);
 
         // =========================================================================
-        // STEP 3: 然后切换「图片 / 视频」模式与对应参数 (图2: 图片 16:9 x1 / 图3: 视频 6秒等)
+        // STEP 3: 切换「图片 / 视频」模式与对应参数 (仅在必要时打开 Popover，且用完必彻底关闭！)
         // =========================================================================
+        const findPopoverContainer = () => {
+          const allDivs = queryAllDeep(document).filter((el) => {
+            if (!isVisible(el)) return false;
+            if (inputEl && el.contains(inputEl)) return false;
+            const r = el.getBoundingClientRect();
+            if (r.width < 180 || r.width > 540 || r.height < 130 || r.height > 640) return false;
+            const txt = el.innerText || el.textContent || '';
+            return (
+              txt.includes('生成将消耗') ||
+              (txt.includes('图片') && txt.includes('视频') && txt.includes('x2') && txt.includes('x3'))
+            );
+          });
+          allDivs.sort(
+            (a, b) =>
+              a.getBoundingClientRect().width * a.getBoundingClientRect().height -
+              b.getBoundingClientRect().width * b.getBoundingClientRect().height
+          );
+          return allDivs[0] || null;
+        };
+
+        const closePopoverThoroughly = async () => {
+          for (let step = 0; step < 6; step++) {
+            const pop = findPopoverContainer();
+            if (!pop) return true;
+
+            // 方式 1: 全局派发 Escape
+            for (const t of [window, document, pop, inputEl].filter(Boolean)) {
+              try {
+                t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, composed: true }));
+                t.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, composed: true }));
+              } catch (_) {}
+            }
+            await sleep(120);
+            if (!findPopoverContainer()) return true;
+
+            // 方式 2: 点击输入框促使浮窗失焦收起
+            if (inputEl) {
+              try {
+                inputEl.focus();
+                inputEl.click();
+              } catch (_) {}
+            }
+            await sleep(150);
+            if (!findPopoverContainer()) return true;
+
+            // 方式 3: 点击模式胶囊按钮
+            const pill = findModePillBtn();
+            if (pill) {
+              triggerSingleClick(pill);
+            }
+            await sleep(200);
+            if (!findPopoverContainer()) return true;
+          }
+          return !findPopoverContainer();
+        };
+
         if (cfg.autoSyncMode) {
           const modePillBtn = findModePillBtn();
 
           if (modePillBtn) {
-            const findPopoverContainer = () => {
-              const allDivs = queryAllDeep(document).filter((el) => {
-                if (!isVisible(el)) return false;
-                if (el.contains(inputEl)) return false; // NEVER match composerBox or page wrapper!
-                const r = el.getBoundingClientRect();
-                if (r.width < 180 || r.width > 540 || r.height < 130 || r.height > 640) return false;
-                const txt = el.innerText || el.textContent || '';
-                return (
-                  txt.includes('生成将消耗') ||
-                  (txt.includes('图片') && txt.includes('视频') && txt.includes('x2') && txt.includes('x3'))
-                );
-              });
-              allDivs.sort(
-                (a, b) =>
-                  a.getBoundingClientRect().width * a.getBoundingClientRect().height -
-                  b.getBoundingClientRect().width * b.getBoundingClientRect().height
-              );
-              return allDivs[0] || null;
-            };
+            const pillText = (modePillBtn.innerText || modePillBtn.textContent || '').trim();
+            // 智能预检：如果当前显示的模式已经是目标模式（例如生图且已有 Nano Banana / 图片），无需强行弹出弹窗！
+            const alreadyInImageMode =
+              cfg.mode === 'image' &&
+              (pillText.includes('Nano Banana') || pillText.includes('图片') || pillText.includes('Omni')) &&
+              !pillText.includes('视频') &&
+              !pillText.includes('720p') &&
+              !pillText.includes('360p');
 
-            // Always open the mode popover to verify/lock in Image (16:9, x1) or Video (素材, 16:9, 720p, 秒数, x1)
-            let popover = await openOverlaySafely(modePillBtn, findPopoverContainer);
+            const alreadyInVideoMode =
+              cfg.mode === 'video' &&
+              (pillText.includes('视频') || pillText.includes('Veo') || pillText.includes('720p') || pillText.includes('360p'));
 
-            const clickInPopover = (targetLabels) => {
-              popover = findPopoverContainer() || popover;
-              if (!popover) return false;
-              const labels = Array.isArray(targetLabels) ? targetLabels : [targetLabels];
-              const candidates = queryAllDeep(popover).filter((el) => {
-                if (!isVisible(el)) return false;
-                const tag = el.tagName;
-                const role = el.getAttribute?.('role') || '';
-                return (
-                  tag === 'BUTTON' ||
-                  role === 'tab' ||
-                  role === 'radio' ||
-                  role === 'option' ||
-                  role === 'button' ||
-                  tag === 'SPAN' ||
-                  tag === 'DIV'
-                );
-              });
+            if (!alreadyInImageMode && !alreadyInVideoMode) {
+              let popover = await openOverlaySafely(modePillBtn, findPopoverContainer);
 
-              for (const lb of labels) {
-                const match = candidates.find((el) => {
-                  const raw = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-                  return raw === lb || raw.endsWith(' ' + lb) || raw.startsWith(lb + ' ');
-                });
-                if (match) {
-                  const btn =
-                    match.closest?.('button, [role="tab"], [role="radio"], [role="option"], [role="button"]') ||
-                    match;
-                  triggerSingleClick(btn);
-                  return true;
-                }
-              }
-              return false;
-            };
-
-            if (popover) {
-              if (cfg.mode === 'image') {
-                clickInPopover(['图片', 'Image']);
-                await sleep(240);
-                clickInPopover([cfg.aspectRatio]);
-                await sleep(140);
-                clickInPopover([cfg.genCount]);
-                await sleep(140);
-              } else {
-                clickInPopover(['视频', 'Video']);
-                await sleep(260);
-                clickInPopover([cfg.vidSubmode]);
-                await sleep(150);
-                clickInPopover([cfg.aspectRatio]);
-                await sleep(140);
-                clickInPopover([cfg.vidRes]);
-                await sleep(140);
-                clickInPopover([cfg.vidDur, cfg.vidDur.replace(/\s+/g, '')]);
-                await sleep(140);
-                clickInPopover([cfg.genCount]);
-                await sleep(140);
-              }
-
-              // Close the mode popover cleanly if it is still open
-              if (findPopoverContainer()) {
-                triggerSingleClick(modePillBtn);
-                for (let w = 0; w < 4; w++) {
-                  await sleep(100);
-                  if (!findPopoverContainer()) break;
-                }
-                if (findPopoverContainer()) {
-                  document.dispatchEvent(
-                    new KeyboardEvent('keydown', {
-                      key: 'Escape',
-                      code: 'Escape',
-                      keyCode: 27,
-                      bubbles: true,
-                      composed: true
-                    })
+              const clickInPopover = (targetLabels) => {
+                popover = findPopoverContainer() || popover;
+                if (!popover) return false;
+                const labels = Array.isArray(targetLabels) ? targetLabels : [targetLabels];
+                const candidates = queryAllDeep(popover).filter((el) => {
+                  if (!isVisible(el)) return false;
+                  const tag = el.tagName;
+                  const role = el.getAttribute?.('role') || '';
+                  return (
+                    tag === 'BUTTON' ||
+                    role === 'tab' ||
+                    role === 'radio' ||
+                    role === 'option' ||
+                    role === 'button' ||
+                    tag === 'SPAN' ||
+                    tag === 'DIV'
                   );
+                });
+
+                for (const lb of labels) {
+                  const match = candidates.find((el) => {
+                    const raw = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                    return raw === lb || raw.endsWith(' ' + lb) || raw.startsWith(lb + ' ');
+                  });
+                  if (match) {
+                    const btn =
+                      match.closest?.('button, [role="tab"], [role="radio"], [role="option"], [role="button"]') ||
+                      match;
+                    triggerSingleClick(btn);
+                    return true;
+                  }
+                }
+                return false;
+              };
+
+              if (popover) {
+                if (cfg.mode === 'image') {
+                  clickInPopover(['图片', 'Image']);
+                  await sleep(240);
+                  clickInPopover([cfg.aspectRatio]);
+                  await sleep(140);
+                  clickInPopover([cfg.genCount]);
+                  await sleep(140);
+                } else {
+                  clickInPopover(['视频', 'Video']);
+                  await sleep(260);
+                  clickInPopover([cfg.vidSubmode]);
                   await sleep(150);
+                  clickInPopover([cfg.aspectRatio]);
+                  await sleep(140);
+                  clickInPopover([cfg.vidRes]);
+                  await sleep(140);
+                  clickInPopover([cfg.vidDur, cfg.vidDur.replace(/\s+/g, '')]);
+                  await sleep(140);
+                  clickInPopover([cfg.genCount]);
+                  await sleep(140);
                 }
               }
             }
+
+            // 无论如何，必须彻底关闭模式 Popover 浮层，绝不留浮层遮挡界面！
+            await closePopoverThoroughly();
           }
         }
 
-        // 提示词、图片与参数完全装填就绪后，等待 2 秒让 Google Flow 状态机完全就绪！
-        await sleep(2000);
+        // =========================================================================
+        // 关键阶段：确保前面所有的参考图、提示词、模式设置完全完成，浮窗全部消失！
+        // 严格按照用户指令：在最终执行点击前稳稳等待 2.5 秒延迟！
+        // =========================================================================
+        await closePopoverThoroughly();
+        if (inputEl) {
+          inputEl.focus();
+        }
+        await sleep(2500);
 
         // =========================================================================
         // STEP 4: 全自动模式自动点击右下角白色圆形 "→" 生成按钮 / 半自动模式停驻交由用户点击
