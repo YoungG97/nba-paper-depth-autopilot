@@ -1292,196 +1292,238 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
         // STEP 4: 全自动模式自动点击右下角白色圆形 "→" 生成按钮 / 半自动模式停驻交由用户点击
         // =========================================================================
         if (cfg.shouldSubmit) {
-          const deepElementsFromPoint = (x, y) => {
-            const collected = [];
-            const seenRoots = new Set();
-            const probeRoot = (root) => {
-              if (!root || seenRoots.has(root) || typeof root.elementsFromPoint !== 'function') return;
-              seenRoots.add(root);
-              const hits = root.elementsFromPoint(x, y) || [];
-              for (const h of hits) {
-                if (!collected.includes(h)) collected.push(h);
-                if (h.shadowRoot) {
-                  probeRoot(h.shadowRoot);
-                }
-              }
-            };
-            probeRoot(document);
-            return collected;
-          };
+          // 全局评分锁定：右下角白色圆形 "→" 发送按钮（White Circular Arrow Button）
+          const findWhiteArrowSendTargets = () => {
+            const all = queryAllDeep(document).filter(isVisible);
+            const inRect = inputEl ? inputEl.getBoundingClientRect() : null;
+            const candidates = [];
 
-          const executeFullClick = (target) => {
-            if (!target) return;
-            // 1. Pointer + Mouse Sequence with exact coordinates
-            triggerPointerSequence(target);
-            // 2. Also trigger on closest button container
-            const btn = target.closest?.('button, [role="button"]');
-            if (btn && btn !== target) {
-              triggerPointerSequence(btn);
-            }
-            // 3. Native .click()
-            try {
-              if (typeof target.click === 'function') target.click();
-            } catch (_) {}
-            try {
-              if (btn && typeof btn.click === 'function') btn.click();
-            } catch (_) {}
-          };
+            for (const el of all) {
+              const tag = el.tagName;
+              if (tag === 'HTML' || tag === 'BODY' || tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'MAIN') continue;
+              if (inputEl && el === inputEl) continue;
 
-          const findBottomRightSendTargets = () => {
-            inputEl = findPromptInput() || inputEl;
-            composerBox = findComposerBox(inputEl);
-            const boxRect = composerBox.getBoundingClientRect();
-            const inRect = inputEl.getBoundingClientRect();
-            const pillBtn = findModePillBtn();
-            const pillRect = pillBtn ? pillBtn.getBoundingClientRect() : null;
-
-            const targets = [];
-
-            // Strategy A: Visual Match - The White Circular Arrow Button (#FFFFFF round button)
-            const allInBox = queryAllDeep(composerBox).filter(isVisible);
-            for (const el of allInBox) {
-              if (el === composerBox || el === inputEl || el === pillBtn) continue;
               const r = el.getBoundingClientRect();
+              // 按钮尺寸范围：宽 20px ~ 70px，高 20px ~ 70px
               if (r.width < 18 || r.width > 72 || r.height < 18 || r.height > 72) continue;
-              // Must be in bottom-right area of composer box
-              if (r.right < boxRect.right - 120 || r.bottom < boxRect.bottom - 80) continue;
+              // 必须在屏幕下半区（弹窗中下部）
+              if (r.top < window.innerHeight * 0.25) continue;
+              // 如果有输入框，按钮必须在输入框同高或下方偏右
+              if (inRect) {
+                if (r.bottom < inRect.top) continue; // 不能在输入框上方
+              }
 
               const style = window.getComputedStyle(el);
               const bg = style.backgroundColor || '';
-              const isWhite =
-                bg.includes('255, 255, 255') ||
-                bg === 'rgb(255, 255, 255)' ||
-                bg === '#ffffff' ||
-                bg === 'white';
-              const isCircular =
-                parseFloat(style.borderRadius || '0') >= 14 ||
-                style.borderRadius.includes('50%') ||
-                style.borderRadius.includes('9999');
 
-              // Arrow icon or SVG inside
-              const hasSvg = el.querySelector('svg, path, polygon') !== null || el.tagName === 'SVG' || el.tagName === 'PATH';
+              // 检测是否具有纯白或亮白背景 (#ffffff / rgb(255, 255, 255))
+              let isWhite = false;
+              if (bg.includes('255, 255, 255') || bg === '#ffffff' || bg === 'white') {
+                isWhite = true;
+              } else {
+                const rgbMatch = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                if (rgbMatch) {
+                  const cr = parseInt(rgbMatch[1], 10);
+                  const cg = parseInt(rgbMatch[2], 10);
+                  const cb = parseInt(rgbMatch[3], 10);
+                  if (cr > 230 && cg > 230 && cb > 230) isWhite = true;
+                }
+              }
+
+              // 也检查直接子元素或父元素是否有白底
+              if (!isWhite && el.firstElementChild) {
+                const childBg = window.getComputedStyle(el.firstElementChild).backgroundColor || '';
+                if (childBg.includes('255, 255, 255') || childBg === '#ffffff') isWhite = true;
+              }
+
+              // 检测是否为正圆 / 大圆角
+              const br = style.borderRadius || '';
+              const isCircular = br.includes('50%') || parseFloat(br) >= 14 || br.includes('9999');
+
+              // 检测内部是否有 SVG / PATH 箭头图标
+              const hasSvg = el.querySelector('svg, path, polygon') !== null || tag === 'SVG' || tag === 'PATH';
               const txt = (el.innerText || el.textContent || '').trim();
-              const hasArrowText = txt === '→' || txt === '➔' || txt === 'arrow_forward' || txt === 'send';
+              const hasArrowText = txt === '→' || txt === '➔' || txt === 'arrow_forward' || txt === 'arrow_right' || txt === 'send';
+              const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+              const hasArrowAria = aria.includes('生成') || aria.includes('generate') || aria.includes('send') || aria.includes('arrow') || aria.includes('提交');
 
-              if (isWhite || (isCircular && (hasSvg || hasArrowText))) {
-                const btnWrap = el.closest?.('button, [role="button"]') || el;
-                if (!targets.includes(btnWrap)) targets.push(btnWrap);
-                if (!targets.includes(el)) targets.push(el);
+              let score = 0;
+              if (isWhite) score += 150;           // 最核心标志：亮白底色在黑夜模式独一无二
+              if (isCircular) score += 60;         // 正圆形
+              if (hasArrowText) score += 80;       // 箭头文字
+              if (hasSvg) score += 40;             // 包含 SVG 图标
+              if (hasArrowAria) score += 60;       // aria-label
+              if (tag === 'BUTTON' || el.getAttribute('role') === 'button') score += 30;
+
+              // 越靠屏幕右侧和下方加分（右下角）
+              score += (r.right / window.innerWidth) * 30;
+              score += (r.bottom / window.innerHeight) * 30;
+
+              // 如果输入框存在，越靠近输入框右下角得分越高
+              if (inRect && r.left >= inRect.left) {
+                score += 30;
+              }
+
+              if (score >= 100) {
+                candidates.push({ el, score, r, isWhite, isCircular });
               }
             }
 
-            // Strategy B: Candidates from composer toolbar
-            const rowTopMin = pillRect ? pillRect.top - 20 : inRect.bottom - 30;
-            const rowBottomMax = pillRect ? pillRect.bottom + 20 : inRect.bottom + 120;
-            const minLeft = pillRect ? pillRect.right - 8 : boxRect.right - 90;
-
-            const bottomRightCandidates = getComposerButtons().filter((el) => {
-              if (!isVisible(el)) return false;
-              if (el === pillBtn) return false;
-              const r = el.getBoundingClientRect();
-              if (r.width < 14 || r.width > 72 || r.height < 14 || r.height > 72) return false;
-              if (r.top < rowTopMin || r.bottom > rowBottomMax) return false;
-              if (r.left < minLeft) return false;
-              return true;
-            });
-
-            bottomRightCandidates.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
-
-            for (const c of bottomRightCandidates) {
-              const btnWrap = c.closest?.('button, [role="button"]') || c;
-              if (!targets.includes(btnWrap)) targets.push(btnWrap);
-              if (!targets.includes(c)) targets.push(c);
-            }
-
-            // Strategy C: Physical coordinate probes in bottom-right corner
-            const probePoints = [
-              [boxRect.right - 28, boxRect.bottom - 28],
-              [boxRect.right - 36, boxRect.bottom - 32],
-              [boxRect.right - 20, boxRect.bottom - 24]
-            ];
-            if (pillRect) {
-              const cy = pillRect.top + pillRect.height / 2;
-              probePoints.push([pillRect.right + 25, cy]);
-              probePoints.push([pillRect.right + 35, cy]);
-            }
-
-            for (const [px, py] of probePoints) {
-              const hitEls = deepElementsFromPoint(px, py);
-              for (const h of hitEls) {
-                if (h === composerBox || h === pillBtn || h === inputEl) continue;
-                const r = h.getBoundingClientRect?.();
-                if (!r || r.width > 75 || r.height > 75 || r.top < rowTopMin) continue;
-                const btnWrap = h.closest?.('button, [role="button"]') || h;
-                if (btnWrap && btnWrap !== composerBox && btnWrap !== pillBtn && !targets.includes(btnWrap)) {
-                  targets.push(btnWrap);
-                }
-                if (!targets.includes(h)) {
-                  targets.push(h);
-                }
-              }
-            }
-
-            return targets;
+            candidates.sort((a, b) => b.score - a.score);
+            return candidates.map((c) => c.el);
           };
 
-          const isTargetEnabled = (el) => {
-            if (!el) return false;
-            if (el.disabled) return false;
-            if (el.getAttribute?.('aria-disabled') === 'true') return false;
-            if (el.hasAttribute?.('disabled')) return false;
-            const st = window.getComputedStyle(el);
-            if (st.pointerEvents === 'none' || parseFloat(st.opacity || '1') < 0.35) return false;
-            return true;
-          };
+          // 物理级无死角点击器：穿透 Shadow DOM、坐标点 elementsFromPoint 与全链路事件
+          const physicallyClickTarget = (target) => {
+            if (!target) return;
+            const r = target.getBoundingClientRect();
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
 
-          let sendTargets = [];
-          for (let w = 0; w < 30; w++) {
-            sendTargets = findBottomRightSendTargets().filter(isTargetEnabled);
-            if (sendTargets.length > 0) break;
-            await sleep(150);
-          }
+            // 1. 获取物理坐标点上的全部堆叠元素
+            const hitElements = document.elementsFromPoint ? document.elementsFromPoint(cx, cy) : [];
+            const chain = [];
+            for (const h of hitElements) {
+              if (!chain.includes(h)) chain.push(h);
+            }
+            if (!chain.includes(target)) chain.unshift(target);
+            const btnWrap = target.closest?.('button, [role="button"]');
+            if (btnWrap && !chain.includes(btnWrap)) chain.push(btnWrap);
 
-          for (let attempt = 0; attempt < 3; attempt++) {
-            sendTargets = findBottomRightSendTargets().filter(isTargetEnabled);
+            // 2. 对链路中的每个关键层级派发完整的 Pointer & Mouse 事件序列
+            for (const el of chain) {
+              try {
+                // pointerover / pointerenter
+                el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true, clientX: cx, clientY: cy }));
+                el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, composed: true, clientX: cx, clientY: cy }));
 
-            if (sendTargets.length > 0) {
-              // Click the primary detected send button
-              executeFullClick(sendTargets[0]);
-              if (sendTargets[1] && sendTargets[1] !== sendTargets[0]) {
-                await sleep(50);
-                executeFullClick(sendTargets[1]);
+                // pointerdown / mousedown
+                const pDown = new PointerEvent('pointerdown', {
+                  bubbles: true,
+                  composed: true,
+                  cancelable: true,
+                  pointerId: 1,
+                  pointerType: 'mouse',
+                  isPrimary: true,
+                  button: 0,
+                  buttons: 1,
+                  clientX: cx,
+                  clientY: cy
+                });
+                el.dispatchEvent(pDown);
+
+                const mDown = new MouseEvent('mousedown', {
+                  bubbles: true,
+                  composed: true,
+                  cancelable: true,
+                  button: 0,
+                  buttons: 1,
+                  clientX: cx,
+                  clientY: cy
+                });
+                el.dispatchEvent(mDown);
+
+                if (typeof el.focus === 'function') el.focus();
+
+                // pointerup / mouseup
+                const pUp = new PointerEvent('pointerup', {
+                  bubbles: true,
+                  composed: true,
+                  cancelable: true,
+                  pointerId: 1,
+                  pointerType: 'mouse',
+                  isPrimary: true,
+                  button: 0,
+                  buttons: 0,
+                  clientX: cx,
+                  clientY: cy
+                });
+                el.dispatchEvent(pUp);
+
+                const mUp = new MouseEvent('mouseup', {
+                  bubbles: true,
+                  composed: true,
+                  cancelable: true,
+                  button: 0,
+                  buttons: 0,
+                  clientX: cx,
+                  clientY: cy
+                });
+                el.dispatchEvent(mUp);
+
+                // 核心：标准 MouseEvent click (带坐标，composed: true 穿透 shadow dom)
+                const cEvt = new MouseEvent('click', {
+                  bubbles: true,
+                  composed: true,
+                  cancelable: true,
+                  view: window,
+                  detail: 1,
+                  button: 0,
+                  buttons: 0,
+                  clientX: cx,
+                  clientY: cy,
+                  screenX: (window.screenX || 0) + cx,
+                  screenY: (window.screenY || 0) + cy
+                });
+                el.dispatchEvent(cEvt);
+              } catch (e) {
+                console.warn('Physical click error:', e);
               }
             }
 
-            // Also dispatch Enter / Cmd+Enter / Ctrl+Enter as solid backup
-            if (inputEl) {
-              inputEl.focus();
-              const keyOpts = {
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                composed: true,
-                cancelable: true
-              };
-              // Plain Enter
-              inputEl.dispatchEvent(new KeyboardEvent('keydown', keyOpts));
-              // Cmd+Enter (Mac) & Ctrl+Enter (Win)
-              inputEl.dispatchEvent(new KeyboardEvent('keydown', { ...keyOpts, metaKey: true, ctrlKey: true }));
+            // 3. 原生 .click() 调用
+            try {
+              if (btnWrap && typeof btnWrap.click === 'function') {
+                btnWrap.click();
+              } else if (typeof target.click === 'function') {
+                target.click();
+              }
+            } catch (_) {}
+          };
+
+          // 辅助保障：键盘快捷键触发 (Cmd+Enter / Ctrl+Enter / Enter)
+          const triggerKeySubmit = () => {
+            const el = inputEl || document.activeElement;
+            if (!el) return;
+            try {
+              if (typeof el.focus === 'function') el.focus();
+              const keyCodes = [
+                { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, metaKey: true, ctrlKey: true },
+                { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, metaKey: false, ctrlKey: false }
+              ];
+              for (const kc of keyCodes) {
+                for (const t of ['keydown', 'keypress', 'keyup']) {
+                  el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, composed: true, cancelable: true, ...kc }));
+                }
+              }
+            } catch (_) {}
+          };
+
+          // 执行点击：循环重试直到按钮被成功触发
+          let clickedOk = false;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const targets = findWhiteArrowSendTargets();
+            if (targets.length > 0) {
+              // 优先点击得分最高的白色圆形按钮
+              physicallyClickTarget(targets[0]);
+              if (targets[1] && targets[1] !== targets[0]) {
+                await sleep(60);
+                physicallyClickTarget(targets[1]);
+              }
+              clickedOk = true;
             }
 
-            await sleep(800);
+            // 同时派遣快捷键
+            triggerKeySubmit();
 
-            const currentInput = findPromptInput();
-            const remainingText = currentInput
-              ? (currentInput.value || currentInput.innerText || currentInput.textContent || '').trim()
-              : '';
-            if (!remainingText || remainingText === '您希望创作什么？' || remainingText.length < 10) {
+            await sleep(400);
+
+            // 检查是否已经触发：如果白色箭头按钮已消失或变为加载中，或者提示框被提交
+            const afterTargets = findWhiteArrowSendTargets();
+            if (afterTargets.length === 0) {
               break;
             }
-            await sleep(600);
+            await sleep(300);
           }
         }
 
