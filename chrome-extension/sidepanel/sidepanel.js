@@ -1292,237 +1292,207 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
         // STEP 4: 全自动模式自动点击右下角白色圆形 "→" 生成按钮 / 半自动模式停驻交由用户点击
         // =========================================================================
         if (cfg.shouldSubmit) {
-          // 全局评分锁定：右下角白色圆形 "→" 发送按钮（White Circular Arrow Button）
-          const findWhiteArrowSendTargets = () => {
-            const all = queryAllDeep(document).filter(isVisible);
+          // 绝对锚点定位：通过模式胶囊按钮 (pillBtn: 如 "Nano Banana 2.1 ▭ x1") 正右侧物理锁定唯一的白色箭头按钮！
+          const findTheExactArrowButton = () => {
+            const pillBtn = findModePillBtn();
+            const pillRect = pillBtn ? pillBtn.getBoundingClientRect() : null;
             const inRect = inputEl ? inputEl.getBoundingClientRect() : null;
+
+            // 优先策略 1 (100% 物理几何锁定)：在 pillBtn 的正右方 10px ~ 60px 范围寻找箭头按钮
+            if (pillRect) {
+              const cy = pillRect.top + pillRect.height / 2;
+              // 从 pillBtn 右侧按步长采样探测
+              for (let dx = 12; dx <= 65; dx += 6) {
+                const px = pillRect.right + dx;
+                const hit = document.elementFromPoint ? document.elementFromPoint(px, cy) : null;
+                if (hit && hit !== document.body && hit !== inputEl && hit !== pillBtn) {
+                  const btn = hit.closest?.('button, [role="button"]') || hit;
+                  const r = btn.getBoundingClientRect();
+                  if (r.width >= 16 && r.width <= 75 && r.height >= 16 && r.height <= 75) {
+                    return btn;
+                  }
+                }
+              }
+
+              // 在 DOM 中筛选紧挨在 pillBtn 右侧的兄弟/邻近按钮
+              const composerBtns = getComposerButtons();
+              const rightNeighbors = composerBtns.filter((b) => {
+                if (b === pillBtn) return false;
+                const r = b.getBoundingClientRect();
+                return (
+                  r.left >= pillRect.right - 6 &&
+                  r.left <= pillRect.right + 90 &&
+                  Math.abs((r.top + r.height / 2) - cy) < 25 &&
+                  r.width >= 16 && r.width <= 75
+                );
+              });
+              if (rightNeighbors.length > 0) {
+                return rightNeighbors[0];
+              }
+            }
+
+            // 策略 2：全页面搜寻白底圆角带有向右箭头（SVG/path 或 → 字符）的专属生成按钮
+            const all = queryAllDeep(document).filter(isVisible);
             const candidates = [];
 
             for (const el of all) {
               const tag = el.tagName;
               if (tag === 'HTML' || tag === 'BODY' || tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'MAIN') continue;
               if (inputEl && el === inputEl) continue;
+              if (pillBtn && el === pillBtn) continue;
 
               const r = el.getBoundingClientRect();
-              // 按钮尺寸范围：宽 20px ~ 70px，高 20px ~ 70px
-              if (r.width < 18 || r.width > 72 || r.height < 18 || r.height > 72) continue;
-              // 必须在屏幕下半区（弹窗中下部）
+              if (r.width < 18 || r.width > 70 || r.height < 18 || r.height > 70) continue;
               if (r.top < window.innerHeight * 0.25) continue;
-              // 如果有输入框，按钮必须在输入框同高或下方偏右
-              if (inRect) {
-                if (r.bottom < inRect.top) continue; // 不能在输入框上方
-              }
+              if (inRect && r.bottom < inRect.top) continue;
 
               const style = window.getComputedStyle(el);
               const bg = style.backgroundColor || '';
+              const isWhite =
+                bg.includes('255, 255, 255') ||
+                bg === '#ffffff' ||
+                bg === 'white';
+              const isRound = style.borderRadius.includes('50%') || parseFloat(style.borderRadius) >= 12;
 
-              // 检测是否具有纯白或亮白背景 (#ffffff / rgb(255, 255, 255))
-              let isWhite = false;
-              if (bg.includes('255, 255, 255') || bg === '#ffffff' || bg === 'white') {
-                isWhite = true;
-              } else {
-                const rgbMatch = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-                if (rgbMatch) {
-                  const cr = parseInt(rgbMatch[1], 10);
-                  const cg = parseInt(rgbMatch[2], 10);
-                  const cb = parseInt(rgbMatch[3], 10);
-                  if (cr > 230 && cg > 230 && cb > 230) isWhite = true;
-                }
-              }
-
-              // 也检查直接子元素或父元素是否有白底
-              if (!isWhite && el.firstElementChild) {
-                const childBg = window.getComputedStyle(el.firstElementChild).backgroundColor || '';
-                if (childBg.includes('255, 255, 255') || childBg === '#ffffff') isWhite = true;
-              }
-
-              // 检测是否为正圆 / 大圆角
-              const br = style.borderRadius || '';
-              const isCircular = br.includes('50%') || parseFloat(br) >= 14 || br.includes('9999');
-
-              // 检测内部是否有 SVG / PATH 箭头图标
               const hasSvg = el.querySelector('svg, path, polygon') !== null || tag === 'SVG' || tag === 'PATH';
               const txt = (el.innerText || el.textContent || '').trim();
               const hasArrowText = txt === '→' || txt === '➔' || txt === 'arrow_forward' || txt === 'arrow_right' || txt === 'send';
               const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-              const hasArrowAria = aria.includes('生成') || aria.includes('generate') || aria.includes('send') || aria.includes('arrow') || aria.includes('提交');
+              const hasArrowAria = aria.includes('生成') || aria.includes('generate') || aria.includes('send') || aria.includes('arrow');
 
               let score = 0;
-              if (isWhite) score += 150;           // 最核心标志：亮白底色在黑夜模式独一无二
-              if (isCircular) score += 60;         // 正圆形
-              if (hasArrowText) score += 80;       // 箭头文字
-              if (hasSvg) score += 40;             // 包含 SVG 图标
-              if (hasArrowAria) score += 60;       // aria-label
-              if (tag === 'BUTTON' || el.getAttribute('role') === 'button') score += 30;
+              if (isWhite && isRound) score += 150;
+              if (hasArrowText) score += 90;
+              if (hasSvg) score += 50;
+              if (hasArrowAria) score += 60;
+              if (tag === 'BUTTON' || el.getAttribute('role') === 'button') score += 40;
 
-              // 越靠屏幕右侧和下方加分（右下角）
-              score += (r.right / window.innerWidth) * 30;
-              score += (r.bottom / window.innerHeight) * 30;
-
-              // 如果输入框存在，越靠近输入框右下角得分越高
-              if (inRect && r.left >= inRect.left) {
-                score += 30;
+              if (pillRect) {
+                if (
+                  r.left >= pillRect.right - 10 &&
+                  r.left <= pillRect.right + 100 &&
+                  Math.abs((r.top + r.height / 2) - (pillRect.top + pillRect.height / 2)) < 30
+                ) {
+                  score += 200; // 处于模式胶囊按钮正右方，直接极高加分！
+                }
               }
 
-              if (score >= 100) {
-                candidates.push({ el, score, r, isWhite, isCircular });
+              if (score >= 90) {
+                candidates.push({ el, score });
               }
             }
 
             candidates.sort((a, b) => b.score - a.score);
-            return candidates.map((c) => c.el);
+            return candidates[0] ? candidates[0].el : null;
           };
 
-          // 物理级无死角点击器：穿透 Shadow DOM、坐标点 elementsFromPoint 与全链路事件
-          const physicallyClickTarget = (target) => {
-            if (!target) return;
+          // 针对箭头按钮的纯粹精准物理点击
+          const clickTheArrow = (arrowEl) => {
+            if (!arrowEl) return;
+            const target = arrowEl.closest?.('button, [role="button"]') || arrowEl;
             const r = target.getBoundingClientRect();
             const cx = r.left + r.width / 2;
             const cy = r.top + r.height / 2;
 
-            // 1. 获取物理坐标点上的全部堆叠元素
-            const hitElements = document.elementsFromPoint ? document.elementsFromPoint(cx, cy) : [];
-            const chain = [];
-            for (const h of hitElements) {
-              if (!chain.includes(h)) chain.push(h);
-            }
-            if (!chain.includes(target)) chain.unshift(target);
-            const btnWrap = target.closest?.('button, [role="button"]');
-            if (btnWrap && !chain.includes(btnWrap)) chain.push(btnWrap);
+            const evtProps = {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              view: window,
+              detail: 1,
+              clientX: cx,
+              clientY: cy,
+              screenX: (window.screenX || 0) + cx,
+              screenY: (window.screenY || 0) + cy
+            };
 
-            // 2. 对链路中的每个关键层级派发完整的 Pointer & Mouse 事件序列
-            for (const el of chain) {
+            // 1. Hover
+            target.dispatchEvent(new MouseEvent('mouseover', evtProps));
+            target.dispatchEvent(new MouseEvent('mouseenter', { ...evtProps, bubbles: false }));
+
+            // 2. PointerDown / MouseDown
+            try {
+              target.dispatchEvent(
+                new PointerEvent('pointerdown', {
+                  ...evtProps,
+                  pointerId: 1,
+                  pointerType: 'mouse',
+                  isPrimary: true,
+                  button: 0,
+                  buttons: 1
+                })
+              );
+            } catch (_) {}
+            target.dispatchEvent(new MouseEvent('mousedown', { ...evtProps, button: 0, buttons: 1 }));
+
+            if (typeof target.focus === 'function') target.focus();
+
+            // 3. PointerUp / MouseUp
+            try {
+              target.dispatchEvent(
+                new PointerEvent('pointerup', {
+                  ...evtProps,
+                  pointerId: 1,
+                  pointerType: 'mouse',
+                  isPrimary: true,
+                  button: 0,
+                  buttons: 0
+                })
+              );
+            } catch (_) {}
+            target.dispatchEvent(new MouseEvent('mouseup', { ...evtProps, button: 0, buttons: 0 }));
+
+            // 4. Click 事件派发
+            target.dispatchEvent(new MouseEvent('click', { ...evtProps, button: 0, buttons: 0 }));
+
+            // 5. 原生 .click()
+            if (typeof target.click === 'function') {
+              target.click();
+            }
+
+            // 6. 如果内部包含 svg 或 path，同时派发以防监听器挂在内部
+            const innerSvg = target.querySelector('svg, path');
+            if (innerSvg && innerSvg !== target) {
               try {
-                // pointerover / pointerenter
-                el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true, clientX: cx, clientY: cy }));
-                el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, composed: true, clientX: cx, clientY: cy }));
-
-                // pointerdown / mousedown
-                const pDown = new PointerEvent('pointerdown', {
-                  bubbles: true,
-                  composed: true,
-                  cancelable: true,
-                  pointerId: 1,
-                  pointerType: 'mouse',
-                  isPrimary: true,
-                  button: 0,
-                  buttons: 1,
-                  clientX: cx,
-                  clientY: cy
-                });
-                el.dispatchEvent(pDown);
-
-                const mDown = new MouseEvent('mousedown', {
-                  bubbles: true,
-                  composed: true,
-                  cancelable: true,
-                  button: 0,
-                  buttons: 1,
-                  clientX: cx,
-                  clientY: cy
-                });
-                el.dispatchEvent(mDown);
-
-                if (typeof el.focus === 'function') el.focus();
-
-                // pointerup / mouseup
-                const pUp = new PointerEvent('pointerup', {
-                  bubbles: true,
-                  composed: true,
-                  cancelable: true,
-                  pointerId: 1,
-                  pointerType: 'mouse',
-                  isPrimary: true,
-                  button: 0,
-                  buttons: 0,
-                  clientX: cx,
-                  clientY: cy
-                });
-                el.dispatchEvent(pUp);
-
-                const mUp = new MouseEvent('mouseup', {
-                  bubbles: true,
-                  composed: true,
-                  cancelable: true,
-                  button: 0,
-                  buttons: 0,
-                  clientX: cx,
-                  clientY: cy
-                });
-                el.dispatchEvent(mUp);
-
-                // 核心：标准 MouseEvent click (带坐标，composed: true 穿透 shadow dom)
-                const cEvt = new MouseEvent('click', {
-                  bubbles: true,
-                  composed: true,
-                  cancelable: true,
-                  view: window,
-                  detail: 1,
-                  button: 0,
-                  buttons: 0,
-                  clientX: cx,
-                  clientY: cy,
-                  screenX: (window.screenX || 0) + cx,
-                  screenY: (window.screenY || 0) + cy
-                });
-                el.dispatchEvent(cEvt);
-              } catch (e) {
-                console.warn('Physical click error:', e);
-              }
+                innerSvg.dispatchEvent(new MouseEvent('click', { ...evtProps, button: 0, buttons: 0 }));
+              } catch (_) {}
             }
-
-            // 3. 原生 .click() 调用
-            try {
-              if (btnWrap && typeof btnWrap.click === 'function') {
-                btnWrap.click();
-              } else if (typeof target.click === 'function') {
-                target.click();
-              }
-            } catch (_) {}
           };
 
-          // 辅助保障：键盘快捷键触发 (Cmd+Enter / Ctrl+Enter / Enter)
-          const triggerKeySubmit = () => {
-            const el = inputEl || document.activeElement;
-            if (!el) return;
-            try {
-              if (typeof el.focus === 'function') el.focus();
-              const keyCodes = [
-                { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, metaKey: true, ctrlKey: true },
-                { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, metaKey: false, ctrlKey: false }
-              ];
-              for (const kc of keyCodes) {
+          // 循环尝试点击，直到箭头按钮被成功点击并触发提交
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const arrowBtn = findTheExactArrowButton();
+            if (arrowBtn) {
+              clickTheArrow(arrowBtn);
+            }
+
+            // 辅以键盘回车
+            if (inputEl) {
+              try {
+                inputEl.focus();
                 for (const t of ['keydown', 'keypress', 'keyup']) {
-                  el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, composed: true, cancelable: true, ...kc }));
+                  inputEl.dispatchEvent(
+                    new KeyboardEvent(t, {
+                      key: 'Enter',
+                      code: 'Enter',
+                      keyCode: 13,
+                      which: 13,
+                      bubbles: true,
+                      composed: true,
+                      cancelable: true,
+                      metaKey: true,
+                      ctrlKey: true
+                    })
+                  );
                 }
-              }
-            } catch (_) {}
-          };
-
-          // 执行点击：循环重试直到按钮被成功触发
-          let clickedOk = false;
-          for (let attempt = 0; attempt < 4; attempt++) {
-            const targets = findWhiteArrowSendTargets();
-            if (targets.length > 0) {
-              // 优先点击得分最高的白色圆形按钮
-              physicallyClickTarget(targets[0]);
-              if (targets[1] && targets[1] !== targets[0]) {
-                await sleep(60);
-                physicallyClickTarget(targets[1]);
-              }
-              clickedOk = true;
+              } catch (_) {}
             }
-
-            // 同时派遣快捷键
-            triggerKeySubmit();
 
             await sleep(400);
 
-            // 检查是否已经触发：如果白色箭头按钮已消失或变为加载中，或者提示框被提交
-            const afterTargets = findWhiteArrowSendTargets();
-            if (afterTargets.length === 0) {
-              break;
-            }
+            // 如果输入框内容已清空或箭头按钮进入 loading/不可用，说明已成功提交
+            const checkBtn = findTheExactArrowButton();
+            if (!checkBtn) break;
             await sleep(300);
           }
         }
