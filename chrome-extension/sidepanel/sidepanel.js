@@ -972,15 +972,67 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
         };
 
         // =========================================================================
-        // STEP 1: 先添加提示图 (Click bottom-left "+" -> 上传的内容 -> 选择图 -> 添加到提示)
+        // 【阶段 1：首要第一步！必须先填入提示词并确保框架完全接收】
+        // 绝不先碰任何按钮，先把完整提示词稳稳注入输入框，杜绝“必须要有提示词”报错！
+        // =========================================================================
+        inputEl = findPromptInput() || inputEl;
+        if (!inputEl || !isGenuineInput(inputEl)) {
+          return { ok: false, reason: '未能锁定「您希望创作什么？」输入框' };
+        }
+
+        inputEl.focus();
+        inputEl.click();
+        await sleep(150);
+
+        // 强力注入提示词到原生 DOM 与框架响应式状态中
+        if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+          const proto =
+            inputEl.tagName === 'TEXTAREA'
+              ? window.HTMLTextAreaElement.prototype
+              : window.HTMLInputElement.prototype;
+          const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          if (nativeSetter) {
+            nativeSetter.call(inputEl, cfg.promptText);
+          } else {
+            inputEl.value = cfg.promptText;
+          }
+          inputEl.dispatchEvent(
+            new InputEvent('input', {
+              bubbles: true,
+              composed: true,
+              inputType: 'insertText',
+              data: cfg.promptText
+            })
+          );
+          inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          inputEl.innerText = '';
+          document.execCommand('selectAll', false, null);
+          document.execCommand('insertText', false, cfg.promptText);
+          inputEl.dispatchEvent(
+            new InputEvent('input', {
+              bubbles: true,
+              composed: true,
+              inputType: 'insertText',
+              data: cfg.promptText
+            })
+          );
+          inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        }
+
+        // 稳等 400ms，确保 Google Flow 状态机完全接收提示词
+        await sleep(400);
+
+        // =========================================================================
+        // 【阶段 2：挂载参考图】（仅在勾选且输入框尚无参考图时执行，严防误触右侧按钮）
         // =========================================================================
         if (cfg.usePlusPicker && getAttachedThumbs().length === 0) {
           const findAssetPickerModal = () => {
             const modals = queryAllDeep(document).filter((el) => {
               if (!isVisible(el)) return false;
-              if (el.contains(inputEl)) return false; // NEVER match body/main/composerBox!
+              if (el.contains(inputEl)) return false;
               const r = el.getBoundingClientRect();
-              // Must be the floating asset picker popup (not the full page body/main!)
               if (r.width < 320 || r.width > 980 || r.height < 220 || r.height > 780) return false;
               const txt = el.innerText || el.textContent || '';
               return (
@@ -998,32 +1050,19 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
 
           let pickerModal = findAssetPickerModal();
           if (!pickerModal) {
-            const composerBtns = getComposerButtons();
-            const agentBtn = composerBtns.find((b) =>
-              (b.innerText || b.textContent || '').includes('智能体')
-            );
+            // 严格只在输入框左下方极窄区域寻找 "+" 按钮（严禁触碰任何中右侧按钮！）
+            const inRect = inputEl.getBoundingClientRect();
+            const composerBtns = getComposerButtons().filter((b) => {
+              const r = b.getBoundingClientRect();
+              // 必须在输入框左侧 1/3 区域，绝不碰右半区！
+              return r.left <= inRect.left + 140 && r.top >= inRect.bottom - 30;
+            });
 
-            let plusBtn = null;
-            if (agentBtn) {
-              const agentRect = agentBtn.getBoundingClientRect();
-              const leftBtns = composerBtns.filter(
-                (b) =>
-                  b !== agentBtn &&
-                  b.getBoundingClientRect().right <= agentRect.left + 16 &&
-                  Math.abs(b.getBoundingClientRect().top - agentRect.top) < 28
-              );
-              leftBtns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-              plusBtn = leftBtns[0] || null;
-            }
-
-            if (!plusBtn) {
-              const inRect = inputEl.getBoundingClientRect();
-              const bottomLeftBtns = composerBtns.filter(
-                (b) => b.getBoundingClientRect().top >= inRect.bottom - 24
-              );
-              bottomLeftBtns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-              plusBtn = bottomLeftBtns[0] || null;
-            }
+            // 优先找 "+" 图标按钮
+            let plusBtn = composerBtns.find((b) => {
+              const t = (b.innerText || b.textContent || '').trim();
+              return t === '+' || t === 'add' || b.querySelector('svg, path');
+            }) || composerBtns[0] || null;
 
             if (plusBtn) {
               pickerModal = await openOverlaySafely(plusBtn, findAssetPickerModal);
@@ -1122,61 +1161,14 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
                   break;
                 }
               }
-              // 选完图片并添加到提示后，稳稳等待 2 秒，确保参考图完全挂载与解码渲染完成！
+              // 参考图添加到提示后充足等待 2 秒
               await sleep(2000);
             }
           }
         }
 
         // =========================================================================
-        // STEP 2: 然后添加提示词 (Fill Prompt Text into Genuine Editor "您希望创作什么？")
-        // =========================================================================
-        inputEl = findPromptInput() || inputEl;
-        if (!inputEl || !isGenuineInput(inputEl)) {
-          return { ok: false, reason: '未能锁定「您希望创作什么？」输入框' };
-        }
-
-        inputEl.focus();
-        inputEl.click();
-        await sleep(120);
-
-        if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-          const proto =
-            inputEl.tagName === 'TEXTAREA'
-              ? window.HTMLTextAreaElement.prototype
-              : window.HTMLInputElement.prototype;
-          const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-          if (nativeSetter) {
-            nativeSetter.call(inputEl, cfg.promptText);
-          } else {
-            inputEl.value = cfg.promptText;
-          }
-          inputEl.dispatchEvent(
-            new InputEvent('input', {
-              bubbles: true,
-              composed: true,
-              inputType: 'insertText',
-              data: cfg.promptText
-            })
-          );
-          inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, cfg.promptText);
-          inputEl.dispatchEvent(
-            new InputEvent('input', {
-              bubbles: true,
-              composed: true,
-              inputType: 'insertText',
-              data: cfg.promptText
-            })
-          );
-        }
-
-        await sleep(320);
-
-        // =========================================================================
-        // STEP 3: 切换「图片 / 视频」模式与对应参数 (仅在必要时打开 Popover，且用完必彻底关闭！)
+        // 【阶段 3：确认模式并彻底关闭所有弹窗浮层】
         // =========================================================================
         const findPopoverContainer = () => {
           const allDivs = queryAllDeep(document).filter((el) => {
@@ -1203,7 +1195,6 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             const pop = findPopoverContainer();
             if (!pop) return true;
 
-            // 方式 1: 全局派发 Escape
             for (const t of [window, document, pop, inputEl].filter(Boolean)) {
               try {
                 t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, composed: true }));
@@ -1213,7 +1204,6 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             await sleep(120);
             if (!findPopoverContainer()) return true;
 
-            // 方式 2: 点击输入框促使浮窗失焦收起
             if (inputEl) {
               try {
                 inputEl.focus();
@@ -1223,7 +1213,6 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             await sleep(150);
             if (!findPopoverContainer()) return true;
 
-            // 方式 3: 点击模式胶囊按钮
             const pill = findModePillBtn();
             if (pill) {
               triggerSingleClick(pill);
@@ -1239,7 +1228,6 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
 
           if (modePillBtn) {
             const pillText = (modePillBtn.innerText || modePillBtn.textContent || '').trim();
-            // 智能预检：如果当前显示的模式已经是目标模式（例如生图且已有 Nano Banana / 图片），无需强行弹出弹窗！
             const alreadyInImageMode =
               cfg.mode === 'image' &&
               (pillText.includes('Nano Banana') || pillText.includes('图片') || pillText.includes('Omni')) &&
@@ -1314,23 +1302,43 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
               }
             }
 
-            // 无论如何，必须彻底关闭模式 Popover 浮层，绝不留浮层遮挡界面！
             await closePopoverThoroughly();
           }
         }
 
-        // =========================================================================
-        // 关键阶段：确保前面所有的参考图、提示词、模式设置完全完成，浮窗全部消失！
-        // 严格按照用户指令：在最终执行点击前稳稳等待 2.5 秒延迟！
-        // =========================================================================
+        // 再次确保浮窗彻底关闭
         await closePopoverThoroughly();
-        if (inputEl) {
-          inputEl.focus();
+
+        // =========================================================================
+        // 【阶段 4：前置流程全部就绪，严格等待 2.5 秒延迟】
+        // 严格检查提示词是否存在，确认绝无浮窗，静置 2.5 秒让 Flow 完全确认就绪！
+        // =========================================================================
+        const currentInput = findPromptInput() || inputEl;
+        const currentVal = (currentInput?.value || currentInput?.innerText || '').trim();
+        if (!currentVal || currentVal === '您希望创作什么？' || currentVal.length < 5) {
+          // 若框架丢失了提示词，立即补填！
+          if (currentInput) {
+            currentInput.focus();
+            if (currentInput.tagName === 'TEXTAREA' || currentInput.tagName === 'INPUT') {
+              currentInput.value = cfg.promptText;
+            } else {
+              currentInput.innerText = cfg.promptText;
+            }
+            currentInput.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: cfg.promptText }));
+            currentInput.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
+
+        if (currentInput) {
+          currentInput.focus();
+        }
+
+        // 严格按照用户指令：等待整整 2.5 秒延迟后再执行最后的点击！
         await sleep(2500);
 
         // =========================================================================
-        // STEP 4: 全自动模式自动点击右下角白色圆形 "→" 生成按钮 / 半自动模式停驻交由用户点击
+        // 【阶段 5：绝对的最后一步——点击执行白色箭头按钮】
+        // 仅在此时此刻，才去定位并点击右下角白色箭头按钮！
         // =========================================================================
         if (cfg.shouldSubmit) {
           // 1. 绝对精度定位：锁定右下角的箭头按钮或其 SVG (Arrow Button)
