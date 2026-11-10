@@ -260,13 +260,17 @@ async function init() {
 
     if (Array.isArray(stored.projects) && stored.projects.length > 0) {
       state.projects = stored.projects;
+      // Auto-register Episode 1 if not present
       if (window.DEFAULT_EP1_PROJECT && !state.projects.some(p => p.id === window.DEFAULT_EP1_PROJECT.id)) {
         state.projects.push(structuredClone(window.DEFAULT_EP1_PROJECT));
+        state.activeProjectId = window.DEFAULT_EP1_PROJECT.id;
+        saveState();
       }
     } else {
       state.projects = [];
       if (window.DEFAULT_EP0_PROJECT) state.projects.push(structuredClone(window.DEFAULT_EP0_PROJECT));
       if (window.DEFAULT_EP1_PROJECT) state.projects.push(structuredClone(window.DEFAULT_EP1_PROJECT));
+      state.activeProjectId = window.DEFAULT_EP1_PROJECT ? window.DEFAULT_EP1_PROJECT.id : (state.projects[0]?.id ?? '');
     }
 
     for (const proj of state.projects) {
