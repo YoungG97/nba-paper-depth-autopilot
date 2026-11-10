@@ -1122,7 +1122,8 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
                   break;
                 }
               }
-              await sleep(350);
+              // 选完图片并添加到提示后，稳稳等待 2 秒，确保参考图完全挂载与解码渲染完成！
+              await sleep(2000);
             }
           }
         }
@@ -1286,7 +1287,8 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
           }
         }
 
-        await sleep(250);
+        // 提示词、图片与参数完全装填就绪后，等待 2 秒让 Google Flow 状态机完全就绪！
+        await sleep(2000);
 
         // =========================================================================
         // STEP 4: 全自动模式自动点击右下角白色圆形 "→" 生成按钮 / 半自动模式停驻交由用户点击
@@ -1380,8 +1382,8 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
               n.dispatchEvent(new MouseEvent('mousemove', { ...baseProps }));
             }
 
-            // 停顿 160ms：等待按钮渲染出浅浅的灰色 Hover 状态！
-            await sleep(160);
+            // 停顿 300ms：确保按钮充分渲染出浅浅的灰色 Hover 就绪状态！
+            await sleep(300);
 
             // 第二阶段：在浅灰色激活就绪状态下，执行标准的按下与点击
             for (const n of nodes) {
@@ -1402,7 +1404,7 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
             }
 
             if (typeof btn.focus === 'function') btn.focus();
-            await sleep(80); // 模拟人类按下的物理停留
+            await sleep(120); // 模拟人类按下的物理停留
 
             for (const n of nodes) {
               try {
