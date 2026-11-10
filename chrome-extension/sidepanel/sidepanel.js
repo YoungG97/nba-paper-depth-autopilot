@@ -1292,181 +1292,153 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
         // STEP 4: 全自动模式自动点击右下角白色圆形 "→" 生成按钮 / 半自动模式停驻交由用户点击
         // =========================================================================
         if (cfg.shouldSubmit) {
-          // 绝对锚点定位：通过模式胶囊按钮 (pillBtn: 如 "Nano Banana 2.1 ▭ x1") 正右侧物理锁定唯一的白色箭头按钮！
-          const findTheExactArrowButton = () => {
+          // 1. 绝对精度定位：锁定右下角的箭头按钮或其 SVG (Arrow Button)
+          const locateTheArrowTarget = () => {
             const pillBtn = findModePillBtn();
             const pillRect = pillBtn ? pillBtn.getBoundingClientRect() : null;
-            const inRect = inputEl ? inputEl.getBoundingClientRect() : null;
 
-            // 优先策略 1 (100% 物理几何锁定)：在 pillBtn 的正右方 10px ~ 60px 范围寻找箭头按钮
+            // 策略 A：在模式胶囊按钮 (pillBtn) 右侧的物理坐标深层穿透探查
             if (pillRect) {
               const cy = pillRect.top + pillRect.height / 2;
-              // 从 pillBtn 右侧按步长采样探测
-              for (let dx = 12; dx <= 65; dx += 6) {
-                const px = pillRect.right + dx;
-                const hit = document.elementFromPoint ? document.elementFromPoint(px, cy) : null;
-                if (hit && hit !== document.body && hit !== inputEl && hit !== pillBtn) {
-                  const btn = hit.closest?.('button, [role="button"]') || hit;
-                  const r = btn.getBoundingClientRect();
-                  if (r.width >= 16 && r.width <= 75 && r.height >= 16 && r.height <= 75) {
-                    return btn;
+              // 探测 pillBtn 右侧 15px 到 45px 的点
+              for (const offset of [24, 20, 28, 16, 34]) {
+                const px = pillRect.right + offset;
+                const hits = document.elementsFromPoint ? document.elementsFromPoint(px, cy) : [];
+                for (const h of hits) {
+                  if (h === document.body || h === document.documentElement || h === inputEl || h === pillBtn) continue;
+                  const r = h.getBoundingClientRect();
+                  if (r.width >= 14 && r.width <= 75 && r.height >= 14 && r.height <= 75) {
+                    const btn = h.closest?.('button, [role="button"]') || h;
+                    return { el: btn, x: r.left + r.width / 2, y: r.top + r.height / 2 };
                   }
                 }
               }
-
-              // 在 DOM 中筛选紧挨在 pillBtn 右侧的兄弟/邻近按钮
-              const composerBtns = getComposerButtons();
-              const rightNeighbors = composerBtns.filter((b) => {
-                if (b === pillBtn) return false;
-                const r = b.getBoundingClientRect();
-                return (
-                  r.left >= pillRect.right - 6 &&
-                  r.left <= pillRect.right + 90 &&
-                  Math.abs((r.top + r.height / 2) - cy) < 25 &&
-                  r.width >= 16 && r.width <= 75
-                );
-              });
-              if (rightNeighbors.length > 0) {
-                return rightNeighbors[0];
-              }
             }
 
-            // 策略 2：全页面搜寻白底圆角带有向右箭头（SVG/path 或 → 字符）的专属生成按钮
-            const all = queryAllDeep(document).filter(isVisible);
-            const candidates = [];
-
-            for (const el of all) {
+            // 策略 B：查找位于胶囊按钮右侧最靠右的 SVG / 箭头元素
+            const allSvgs = queryAllDeep(document).filter((el) => {
+              if (!isVisible(el)) return false;
               const tag = el.tagName;
-              if (tag === 'HTML' || tag === 'BODY' || tag === 'TEXTAREA' || tag === 'INPUT' || tag === 'MAIN') continue;
-              if (inputEl && el === inputEl) continue;
-              if (pillBtn && el === pillBtn) continue;
-
+              if (tag !== 'SVG' && tag !== 'PATH') return false;
               const r = el.getBoundingClientRect();
-              if (r.width < 18 || r.width > 70 || r.height < 18 || r.height > 70) continue;
-              if (r.top < window.innerHeight * 0.25) continue;
-              if (inRect && r.bottom < inRect.top) continue;
+              if (pillRect && r.left < pillRect.right - 5) return false;
+              if (r.width > 70 || r.height > 70) return false;
+              return r.top > window.innerHeight * 0.25;
+            });
 
-              const style = window.getComputedStyle(el);
-              const bg = style.backgroundColor || '';
-              const isWhite =
-                bg.includes('255, 255, 255') ||
-                bg === '#ffffff' ||
-                bg === 'white';
-              const isRound = style.borderRadius.includes('50%') || parseFloat(style.borderRadius) >= 12;
-
-              const hasSvg = el.querySelector('svg, path, polygon') !== null || tag === 'SVG' || tag === 'PATH';
-              const txt = (el.innerText || el.textContent || '').trim();
-              const hasArrowText = txt === '→' || txt === '➔' || txt === 'arrow_forward' || txt === 'arrow_right' || txt === 'send';
-              const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-              const hasArrowAria = aria.includes('生成') || aria.includes('generate') || aria.includes('send') || aria.includes('arrow');
-
-              let score = 0;
-              if (isWhite && isRound) score += 150;
-              if (hasArrowText) score += 90;
-              if (hasSvg) score += 50;
-              if (hasArrowAria) score += 60;
-              if (tag === 'BUTTON' || el.getAttribute('role') === 'button') score += 40;
-
-              if (pillRect) {
-                if (
-                  r.left >= pillRect.right - 10 &&
-                  r.left <= pillRect.right + 100 &&
-                  Math.abs((r.top + r.height / 2) - (pillRect.top + pillRect.height / 2)) < 30
-                ) {
-                  score += 200; // 处于模式胶囊按钮正右方，直接极高加分！
-                }
-              }
-
-              if (score >= 90) {
-                candidates.push({ el, score });
-              }
+            if (allSvgs.length > 0) {
+              allSvgs.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+              const bestSvg = allSvgs[0];
+              const r = bestSvg.getBoundingClientRect();
+              const btn = bestSvg.closest?.('button, [role="button"], div') || bestSvg;
+              return { el: btn, x: r.left + r.width / 2, y: r.top + r.height / 2 };
             }
 
-            candidates.sort((a, b) => b.score - a.score);
-            return candidates[0] ? candidates[0].el : null;
+            // 策略 C：若上述未命中，直接以 pillBtn 右侧预期区域为物理坐标
+            if (pillRect) {
+              return {
+                el: pillBtn.nextElementSibling || pillBtn.parentElement?.lastElementChild || null,
+                x: pillRect.right + 24,
+                y: pillRect.top + pillRect.height / 2
+              };
+            }
+
+            return null;
           };
 
-          // 针对箭头按钮的纯粹精准物理点击
-          const clickTheArrow = (arrowEl) => {
-            if (!arrowEl) return;
-            const target = arrowEl.closest?.('button, [role="button"]') || arrowEl;
-            const r = target.getBoundingClientRect();
-            const cx = r.left + r.width / 2;
-            const cy = r.top + r.height / 2;
+          // 2. 模拟用户真实操作：鼠标移上去 (Hover 变成浅灰色) ➔ 等待变灰就绪 ➔ 真正点击
+          const hoverAndClickArrow = async (targetInfo) => {
+            if (!targetInfo) return false;
+            const { x, y } = targetInfo;
 
-            const evtProps = {
+            // 获取 (x, y) 处最顶层的实际 DOM 节点
+            const topEl = (document.elementFromPoint ? document.elementFromPoint(x, y) : null) || targetInfo.el;
+            if (!topEl) return false;
+
+            const btn = topEl.closest?.('button, [role="button"]') || topEl;
+            const nodes = [topEl, btn];
+
+            const baseProps = {
               bubbles: true,
               cancelable: true,
               composed: true,
               view: window,
-              detail: 1,
-              clientX: cx,
-              clientY: cy,
-              screenX: (window.screenX || 0) + cx,
-              screenY: (window.screenY || 0) + cy
+              detail: 0,
+              clientX: x,
+              clientY: y,
+              screenX: (window.screenX || 0) + x,
+              screenY: (window.screenY || 0) + y
             };
 
-            // 1. Hover
-            target.dispatchEvent(new MouseEvent('mouseover', evtProps));
-            target.dispatchEvent(new MouseEvent('mouseenter', { ...evtProps, bubbles: false }));
-
-            // 2. PointerDown / MouseDown
-            try {
-              target.dispatchEvent(
-                new PointerEvent('pointerdown', {
-                  ...evtProps,
-                  pointerId: 1,
-                  pointerType: 'mouse',
-                  isPrimary: true,
-                  button: 0,
-                  buttons: 1
-                })
-              );
-            } catch (_) {}
-            target.dispatchEvent(new MouseEvent('mousedown', { ...evtProps, button: 0, buttons: 1 }));
-
-            if (typeof target.focus === 'function') target.focus();
-
-            // 3. PointerUp / MouseUp
-            try {
-              target.dispatchEvent(
-                new PointerEvent('pointerup', {
-                  ...evtProps,
-                  pointerId: 1,
-                  pointerType: 'mouse',
-                  isPrimary: true,
-                  button: 0,
-                  buttons: 0
-                })
-              );
-            } catch (_) {}
-            target.dispatchEvent(new MouseEvent('mouseup', { ...evtProps, button: 0, buttons: 0 }));
-
-            // 4. Click 事件派发
-            target.dispatchEvent(new MouseEvent('click', { ...evtProps, button: 0, buttons: 0 }));
-
-            // 5. 原生 .click()
-            if (typeof target.click === 'function') {
-              target.click();
+            // 第一阶段：鼠标移动到箭头上方悬停 (Hover) —— 让白色箭头变成浅浅的灰色！
+            for (const n of nodes) {
+              n.dispatchEvent(new PointerEvent('pointerover', { ...baseProps }));
+              n.dispatchEvent(new MouseEvent('mouseover', { ...baseProps }));
+              n.dispatchEvent(new PointerEvent('pointerenter', { ...baseProps, bubbles: false }));
+              n.dispatchEvent(new MouseEvent('mouseenter', { ...baseProps, bubbles: false }));
+              n.dispatchEvent(new PointerEvent('pointermove', { ...baseProps }));
+              n.dispatchEvent(new MouseEvent('mousemove', { ...baseProps }));
             }
 
-            // 6. 如果内部包含 svg 或 path，同时派发以防监听器挂在内部
-            const innerSvg = target.querySelector('svg, path');
-            if (innerSvg && innerSvg !== target) {
+            // 停顿 160ms：等待按钮渲染出浅浅的灰色 Hover 状态！
+            await sleep(160);
+
+            // 第二阶段：在浅灰色激活就绪状态下，执行标准的按下与点击
+            for (const n of nodes) {
               try {
-                innerSvg.dispatchEvent(new MouseEvent('click', { ...evtProps, button: 0, buttons: 0 }));
+                n.dispatchEvent(
+                  new PointerEvent('pointerdown', {
+                    ...baseProps,
+                    detail: 1,
+                    pointerId: 1,
+                    pointerType: 'mouse',
+                    isPrimary: true,
+                    button: 0,
+                    buttons: 1
+                  })
+                );
               } catch (_) {}
+              n.dispatchEvent(new MouseEvent('mousedown', { ...baseProps, detail: 1, button: 0, buttons: 1 }));
             }
+
+            if (typeof btn.focus === 'function') btn.focus();
+            await sleep(80); // 模拟人类按下的物理停留
+
+            for (const n of nodes) {
+              try {
+                n.dispatchEvent(
+                  new PointerEvent('pointerup', {
+                    ...baseProps,
+                    detail: 1,
+                    pointerId: 1,
+                    pointerType: 'mouse',
+                    isPrimary: true,
+                    button: 0,
+                    buttons: 0
+                  })
+                );
+              } catch (_) {}
+              n.dispatchEvent(new MouseEvent('mouseup', { ...baseProps, detail: 1, button: 0, buttons: 0 }));
+              n.dispatchEvent(new MouseEvent('click', { ...baseProps, detail: 1, button: 0, buttons: 0 }));
+            }
+
+            // 原生 .click() 触发
+            try {
+              if (typeof btn.click === 'function') btn.click();
+              if (topEl !== btn && typeof topEl.click === 'function') topEl.click();
+            } catch (_) {}
+
+            return true;
           };
 
-          // 循环尝试点击，直到箭头按钮被成功点击并触发提交
-          for (let attempt = 0; attempt < 5; attempt++) {
-            const arrowBtn = findTheExactArrowButton();
-            if (arrowBtn) {
-              clickTheArrow(arrowBtn);
+          // 执行悬停变灰并点击，循环尝试直到提交成功
+          for (let attempt = 0; attempt < 4; attempt++) {
+            const targetInfo = locateTheArrowTarget();
+            if (targetInfo) {
+              await hoverAndClickArrow(targetInfo);
             }
 
-            // 辅以键盘回车
+            // 辅助：输入框回车提交
             if (inputEl) {
               try {
                 inputEl.focus();
@@ -1488,12 +1460,14 @@ async function feedShotToFlow(shotIndex, overrideShouldSubmit = null) {
               } catch (_) {}
             }
 
-            await sleep(400);
+            await sleep(500);
 
-            // 如果输入框内容已清空或箭头按钮进入 loading/不可用，说明已成功提交
-            const checkBtn = findTheExactArrowButton();
-            if (!checkBtn) break;
-            await sleep(300);
+            // 检查：如果输入框文字被清空，或右侧箭头已消失/变暗/loading，说明已成功提交
+            const remaining = findPromptInput();
+            const txt = remaining ? (remaining.value || remaining.innerText || '').trim() : '';
+            if (!txt || txt === '您希望创作什么？' || txt.length < 10) {
+              break;
+            }
           }
         }
 
